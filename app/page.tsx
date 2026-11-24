@@ -1,8 +1,8 @@
 import Link from "next/link";
 import { getAllCountries } from "@/lib/content";
 
-export default function HomePage() {
-  const countries = getAllCountries();
+export default async function HomePage() {
+  const countries = await getAllCountries();
 
   return (
     <>
@@ -12,9 +12,7 @@ export default function HomePage() {
       </p>
 
       {countries.length === 0 ? (
-        <p className="mt-8 text-stone-500">
-          Ainda não há países. Adiciona um ficheiro .md em data/countries/.
-        </p>
+        <p className="mt-8 text-stone-500">Ainda não há países publicados.</p>
       ) : (
         <ul className="mt-8 grid gap-6 sm:grid-cols-2">
           {countries.map((country) => (

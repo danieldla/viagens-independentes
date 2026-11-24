@@ -1,36 +1,53 @@
-import fs from "node:fs";
-import path from "node:path";
-import matter from "gray-matter";
 import { remark } from "remark";
 import html from "remark-html";
 
-const DATA_DIR = path.join(process.cwd(), "data");
-const COUNTRIES_DIR = path.join(DATA_DIR, "countries");
-const CITIES_DIR = path.join(DATA_DIR, "cities");
+/**
+ * Leitura pública via API REST do Supabase (PostgREST), com cache do Next.js.
+ * - `revalidate`: renova a cache de hora a hora no máximo.
+ * - `tags: ["content"]`: o admin invalida a cache ao gravar (revalidateTag).
+ */
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+const REVALIDATE_SECONDS = 3600;
 
 export type CityRef = { slug: string; title: string };
 
-export type Country = {
+export type CountrySummary = {
   slug: string;
   title: string;
   coverImage?: string;
   description: string;
-  cities: CityRef[]; // do frontmatter; se vazio, descobertas a partir de data/cities/<país>/
-  content: string; // Markdown em bruto
+};
+
+export type Country = CountrySummary & {
+  cities: CityRef[];
+  content: string; // Markdown
 };
 
 export type City = {
   slug: string;
-  countrySlug: string;
   title: string;
   coverImage?: string;
   description: string;
-  content: string;
+  content: string; // Markdown
+  countrySlug: string;
+  countryTitle: string;
 };
 
-function listMarkdownFiles(dir: string): string[] {
-  if (!fs.existsSync(dir)) return [];
-  return fs.readdirSync(dir).filter((f) => f.endsWith(".md"));
+async function rest<T>(path: string): Promise<T> {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    throw new Error(
+      "Faltam NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY nas variáveis de ambiente."
+    );
+  }
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+    headers: { apikey: SUPABASE_ANON_KEY, Accept: "application/json" },
+    next: { revalidate: REVALIDATE_SECONDS, tags: ["content"] },
+  });
+  if (!res.ok) {
+    throw new Error(`Supabase REST ${res.status}: ${await res.text()}`);
+  }
+  return res.json() as Promise<T>;
 }
 
 function excerpt(markdown: string, max = 160): string {
@@ -44,59 +61,82 @@ function excerpt(markdown: string, max = 160): string {
   return plain.length > max ? plain.slice(0, max - 1).trimEnd() + "…" : plain;
 }
 
-function fileSlug(file: string): string {
-  return file.replace(/\.md$/, "");
+type CountryRow = {
+  slug: string;
+  title: string;
+  description: string | null;
+  cover_image: string | null;
+  content?: string;
+  cities?: CityRef[];
+};
+
+type CityRow = {
+  slug: string;
+  title: string;
+  description: string | null;
+  cover_image: string | null;
+  content: string;
+  countries: { slug: string; title: string };
+};
+
+export async function getAllCountries(): Promise<CountrySummary[]> {
+  const rows = await rest<CountryRow[]>(
+    "countries?select=slug,title,description,cover_image&order=title.asc"
+  );
+  return rows.map((r) => ({
+    slug: r.slug,
+    title: r.title,
+    coverImage: r.cover_image ?? undefined,
+    description: r.description ?? "",
+  }));
 }
 
-function readCityFile(countrySlug: string, file: string): City {
-  const raw = fs.readFileSync(path.join(CITIES_DIR, countrySlug, file), "utf8");
-  const { data, content } = matter(raw);
+export async function getCountry(slug: string): Promise<Country | undefined> {
+  const rows = await rest<CountryRow[]>(
+    `countries?select=slug,title,description,cover_image,content,cities(slug,title)` +
+      `&cities.order=title.asc&slug=eq.${encodeURIComponent(slug)}&limit=1`
+  );
+  const r = rows[0];
+  if (!r) return undefined;
+  const content = r.content ?? "";
   return {
-    slug: data.slug ?? fileSlug(file),
-    countrySlug,
-    title: data.title ?? fileSlug(file),
-    coverImage: data.coverImage,
-    description: data.description ?? excerpt(content),
+    slug: r.slug,
+    title: r.title,
+    coverImage: r.cover_image ?? undefined,
+    description: r.description || excerpt(content),
+    cities: r.cities ?? [],
     content,
   };
 }
 
-/** Todas as cidades de um país, lidas de data/cities/<país>/*.md */
-export function getCitiesOfCountry(countrySlug: string): City[] {
-  return listMarkdownFiles(path.join(CITIES_DIR, countrySlug)).map((f) =>
-    readCityFile(countrySlug, f)
+export async function getCity(
+  countrySlug: string,
+  citySlug: string
+): Promise<City | undefined> {
+  const rows = await rest<CityRow[]>(
+    `cities?select=slug,title,description,cover_image,content,countries!inner(slug,title)` +
+      `&slug=eq.${encodeURIComponent(citySlug)}` +
+      `&countries.slug=eq.${encodeURIComponent(countrySlug)}&limit=1`
   );
+  const r = rows[0];
+  if (!r) return undefined;
+  return {
+    slug: r.slug,
+    title: r.title,
+    coverImage: r.cover_image ?? undefined,
+    description: r.description || excerpt(r.content),
+    content: r.content,
+    countrySlug: r.countries.slug,
+    countryTitle: r.countries.title,
+  };
 }
 
-export function getCity(countrySlug: string, citySlug: string): City | undefined {
-  return getCitiesOfCountry(countrySlug).find((c) => c.slug === citySlug);
-}
-
-export function getAllCountries(): Country[] {
-  return listMarkdownFiles(COUNTRIES_DIR)
-    .map((file) => {
-      const raw = fs.readFileSync(path.join(COUNTRIES_DIR, file), "utf8");
-      const { data, content } = matter(raw);
-      const slug: string = data.slug ?? fileSlug(file);
-
-      const cities: CityRef[] = Array.isArray(data.cities)
-        ? data.cities
-        : getCitiesOfCountry(slug).map(({ slug, title }) => ({ slug, title }));
-
-      return {
-        slug,
-        title: data.title ?? slug,
-        coverImage: data.coverImage,
-        description: data.description ?? excerpt(content),
-        cities,
-        content,
-      } satisfies Country;
-    })
-    .sort((a, b) => a.title.localeCompare(b.title, "pt"));
-}
-
-export function getCountry(slug: string): Country | undefined {
-  return getAllCountries().find((c) => c.slug === slug);
+/** Pares { country, city } para generateStaticParams. */
+export async function getAllCityParams(): Promise<{ country: string; city: string }[]> {
+  const rows = await rest<{ slug: string; countries: { slug: string } }[]>(
+    "cities?select=slug,countries!inner(slug)"
+  );
+  return rows.map((r) => ({ country: r.countries.slug, city: r.slug }));
 }
 
 export async function markdownToHtml(markdown: string): Promise<string> {

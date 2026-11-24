@@ -5,15 +5,20 @@ import { getAllCountries, getCountry, markdownToHtml } from "@/lib/content";
 
 type Props = { params: { country: string } };
 
-// Só os países com ficheiro .md existem; o resto devolve 404.
-export const dynamicParams = false;
+// dynamicParams fica ativo (por omissão): países criados no /admin depois do
+// build são gerados no primeiro acesso e ficam em cache.
 
-export function generateStaticParams() {
-  return getAllCountries().map((c) => ({ country: c.slug }));
+export async function generateStaticParams() {
+  try {
+    const countries = await getAllCountries();
+    return countries.map((c) => ({ country: c.slug }));
+  } catch {
+    return []; // build sem acesso ao Supabase: as páginas geram-se a pedido
+  }
 }
 
-export function generateMetadata({ params }: Props): Metadata {
-  const country = getCountry(params.country);
+export async function generateMetadata({ params }: Props): Promise<Metadata> {
+  const country = await getCountry(params.country);
   if (!country) return {};
   return {
     title: country.title,
@@ -27,7 +32,7 @@ export function generateMetadata({ params }: Props): Metadata {
 }
 
 export default async function CountryPage({ params }: Props) {
-  const country = getCountry(params.country);
+  const country = await getCountry(params.country);
   if (!country) notFound();
 
   const contentHtml = await markdownToHtml(country.content);

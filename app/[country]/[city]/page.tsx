@@ -1,34 +1,23 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import {
-  getAllCountries,
-  getCitiesOfCountry,
-  getCity,
-  getCountry,
-  markdownToHtml,
-} from "@/lib/content";
+import { getAllCityParams, getCity, markdownToHtml } from "@/lib/content";
 
 type Props = { params: { country: string; city: string } };
 
-export const dynamicParams = false;
-
-// Percorre todos os países e, para cada um, os ficheiros em data/cities/<país>/
-export function generateStaticParams() {
-  return getAllCountries().flatMap((country) =>
-    getCitiesOfCountry(country.slug).map((city) => ({
-      country: country.slug,
-      city: city.slug,
-    }))
-  );
+export async function generateStaticParams() {
+  try {
+    return await getAllCityParams();
+  } catch {
+    return [];
+  }
 }
 
-export function generateMetadata({ params }: Props): Metadata {
-  const city = getCity(params.country, params.city);
-  const country = getCountry(params.country);
+export async function generateMetadata({ params }: Props): Promise<Metadata> {
+  const city = await getCity(params.country, params.city);
   if (!city) return {};
   return {
-    title: country ? `${city.title}, ${country.title}` : city.title,
+    title: `${city.title}, ${city.countryTitle}`,
     description: city.description,
     openGraph: {
       title: city.title,
@@ -39,17 +28,16 @@ export function generateMetadata({ params }: Props): Metadata {
 }
 
 export default async function CityPage({ params }: Props) {
-  const country = getCountry(params.country);
-  const city = getCity(params.country, params.city);
-  if (!country || !city) notFound();
+  const city = await getCity(params.country, params.city);
+  if (!city) notFound();
 
   const contentHtml = await markdownToHtml(city.content);
 
   return (
     <article>
       <nav className="text-sm text-stone-500">
-        <Link href={`/${country.slug}`} className="hover:underline">
-          ← {country.title}
+        <Link href={`/${city.countrySlug}`} className="hover:underline">
+          ← {city.countryTitle}
         </Link>
       </nav>
 
